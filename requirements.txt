@@ -1,0 +1,6 @@
+gradio
+pillow
+safetensors
+timm
+torch
+torchvision
