@@ -4,7 +4,16 @@ import json
 # Import refactored modules
 from models.image_tagger import ImageTagger
 from utils.image_processing import create_transform
-from utils.batch_processing import process_folder, process_urls, format_results_as_csv, save_csv_to_file
+from utils.batch_processing import (
+    process_folder,
+    process_urls,
+    process_urls_or_paths,
+    format_results_as_csv,
+    save_csv_to_file,
+    create_csv_file,
+    create_txt_files_zip,
+    create_txt_and_images_zip
+)
 from ui.gradio_interface import create_interface
 
 # Disable gradient computation for inference
@@ -25,8 +34,11 @@ def main():
         transform=transform,
         process_folder_fn=process_folder,
         process_urls_fn=process_urls,
+        process_urls_or_paths_fn=process_urls_or_paths,
         format_csv_fn=format_results_as_csv,
-        save_csv_fn=save_csv_to_file
+        create_csv_file_fn=create_csv_file,
+        create_txt_files_zip_fn=create_txt_files_zip,
+        create_txt_and_images_zip_fn=create_txt_and_images_zip
     )
     
     # Launch the demo

@@ -1,0 +1,223 @@
+import json
+
+import gradio as gr
+from PIL import Image
+import safetensors.torch
+import timm
+from timm.models import VisionTransformer
+import torch
+from torchvision.transforms import transforms
+from torchvision.transforms import InterpolationMode
+import torchvision.transforms.functional as TF
+
+torch.set_grad_enabled(False)
+
+class Fit(torch.nn.Module):
+    def __init__(
+        self,
+        bounds: tuple[int, int] | int,
+        interpolation = InterpolationMode.LANCZOS,
+        grow: bool = True,
+        pad: float | None = None
+    ):
+        super().__init__()
+
+        self.bounds = (bounds, bounds) if isinstance(bounds, int) else bounds
+        self.interpolation = interpolation
+        self.grow = grow
+        self.pad = pad
+
+    def forward(self, img: Image) -> Image:
+        wimg, himg = img.size
+        hbound, wbound = self.bounds
+
+        hscale = hbound / himg
+        wscale = wbound / wimg
+
+        if not self.grow:
+            hscale = min(hscale, 1.0)
+            wscale = min(wscale, 1.0)
+
+        scale = min(hscale, wscale)
+        if scale == 1.0:
+            return img
+
+        hnew = min(round(himg * scale), hbound)
+        wnew = min(round(wimg * scale), wbound)
+
+        img = TF.resize(img, (hnew, wnew), self.interpolation)
+
+        if self.pad is None:
+            return img
+
+        hpad = hbound - hnew
+        wpad = wbound - wnew
+
+        tpad = hpad // 2
+        bpad = hpad - tpad
+
+        lpad = wpad // 2
+        rpad = wpad - lpad
+
+        return TF.pad(img, (lpad, tpad, rpad, bpad), self.pad)
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}(" +
+            f"bounds={self.bounds}, " +
+            f"interpolation={self.interpolation.value}, " +
+            f"grow={self.grow}, " +
+            f"pad={self.pad})"
+        )
+
+class CompositeAlpha(torch.nn.Module):
+    def __init__(
+        self,
+        background: tuple[float, float, float] | float,
+    ):
+        super().__init__()
+
+        self.background = (background, background, background) if isinstance(background, float) else background
+        self.background = torch.tensor(self.background).unsqueeze(1).unsqueeze(2)
+
+    def forward(self, img: torch.Tensor) -> torch.Tensor:
+        if img.shape[-3] == 3:
+            return img
+
+        alpha = img[..., 3, None, :, :]
+
+        img[..., :3, :, :] *= alpha
+
+        background = self.background.expand(-1, img.shape[-2], img.shape[-1])
+        if background.ndim == 1:
+            background = background[:, None, None]
+        elif background.ndim == 2:
+            background = background[None, :, :]
+
+        img[..., :3, :, :] += (1.0 - alpha) * background
+        return img[..., :3, :, :]
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}(" +
+            f"background={self.background})"
+        )
+
+transform = transforms.Compose([
+    Fit((384, 384)),
+    transforms.ToTensor(),
+    CompositeAlpha(0.5),
+    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
+    transforms.CenterCrop((384, 384)),
+])
+
+model = timm.create_model(
+    "vit_so400m_patch14_siglip_384.webli",
+    pretrained=False,
+    num_classes=9083,
+) # type: VisionTransformer
+
+class GatedHead(torch.nn.Module):
+    def __init__(self,
+        num_features: int,
+        num_classes: int
+    ):
+        super().__init__()
+        self.num_classes = num_classes
+        self.linear = torch.nn.Linear(num_features, num_classes * 2)
+
+        self.act = torch.nn.Sigmoid()
+        self.gate = torch.nn.Sigmoid()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.linear(x)
+        x = self.act(x[:, :self.num_classes]) * self.gate(x[:, self.num_classes:])
+        return x
+
+model.head = GatedHead(min(model.head.weight.shape), 9083)
+
+safetensors.torch.load_model(model, "JTP_PILOT2-e3-vit_so400m_patch14_siglip_384.safetensors")
+
+if torch.cuda.is_available():
+    model.cuda()
+    if torch.cuda.get_device_capability()[0] >= 7: # tensor cores
+        model.to(dtype=torch.float16, memory_format=torch.channels_last)
+
+model.eval()
+
+with open("tags.json", "r") as file:
+    tags = json.load(file) # type: dict
+allowed_tags = list(tags.keys())
+
+for idx, tag in enumerate(allowed_tags):
+    allowed_tags[idx] = tag.replace("_", " ")
+
+sorted_tag_score = {}
+
+def run_classifier(image, threshold):
+    global sorted_tag_score
+    img = image.convert('RGBA')
+    tensor = transform(img).unsqueeze(0)
+
+    if torch.cuda.is_available():
+        tensor = tensor.cuda()
+        if torch.cuda.get_device_capability()[0] >= 7: # tensor cores
+            tensor = tensor.to(dtype=torch.float16, memory_format=torch.channels_last)
+
+    with torch.no_grad():
+        probits = model(tensor)[0].cpu()
+        values, indices = probits.topk(250)
+
+    tag_score = dict()
+    for i in range(indices.size(0)):
+        tag_score[allowed_tags[indices[i]]] = values[i].item()
+    sorted_tag_score = dict(sorted(tag_score.items(), key=lambda item: item[1], reverse=True))
+
+    return create_tags(threshold)
+
+def create_tags(threshold):
+    global sorted_tag_score
+    filtered_tag_score = {key: value for key, value in sorted_tag_score.items() if value > threshold}
+    text_no_impl = ", ".join(filtered_tag_score.keys())
+    return text_no_impl, filtered_tag_score
+
+def clear_image():
+    global sorted_tag_score
+    sorted_tag_score = {}
+    return "", {}
+
+with gr.Blocks(css=".output-class { display: none; }") as demo:
+    gr.Markdown("""
+    ## Joint Tagger Project: JTP-PILOT² Demo **BETA**
+    This tagger is designed for use on furry images (though may very well work on out-of-distribution images, potentially with funny results).  A threshold of 0.2 is recommended.  Lower thresholds often turn up more valid tags, but can also result in some amount of hallucinated tags.
+    This tagger is the result of joint efforts between members of the RedRocket team, with distinctions given to Thessalo for creating the foundation for this project with his efforts, RedHotTensors for redesigning the process into a second-order method that models information expectation, and drhead for dataset prep, creation of training code and supervision of training runs.
+    Special thanks to Minotoro at frosting.ai for providing the compute power for this project.
+    """)
+    with gr.Row():
+        with gr.Column():
+            image_input = gr.Image(label="Source", sources=['upload'], type='pil', height=512, show_label=False)
+            threshold_slider = gr.Slider(minimum=0.00, maximum=1.00, step=0.01, value=0.20, label="Threshold")
+        with gr.Column():
+            tag_string = gr.Textbox(label="Tag String")
+            label_box = gr.Label(label="Tag Predictions", num_top_classes=250, show_label=False)
+
+    image_input.upload(
+        fn=run_classifier,
+        inputs=[image_input, threshold_slider],
+        outputs=[tag_string, label_box]
+    )
+
+    image_input.clear(
+        fn=clear_image,
+        inputs=[],
+        outputs=[tag_string, label_box]
+    )
+
+    threshold_slider.input(
+        fn=create_tags,
+        inputs=[threshold_slider],
+        outputs=[tag_string, label_box]
+    )
+
+if __name__ == "__main__":
+    demo.launch()
