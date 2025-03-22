@@ -1,4 +1,5 @@
 import gradio as gr
+import utils.batch_processing
 import os
 import base64
 from io import BytesIO
@@ -73,6 +74,7 @@ def create_interface(
     
     # Batch processing functions
     def process_folder_path(folder_path, threshold, progress=gr.Progress()):
+        import os
         if not folder_path or not os.path.isdir(folder_path):
             return "<p>Invalid folder path</p>", None, None, None
         
@@ -92,9 +94,59 @@ def create_interface(
         html_output = format_results_as_html(results)
         
         # Create downloadable files
-        csv_file_path = create_csv_file_fn(csv_output)
-        txt_zip_path = create_txt_files_zip_fn(results)
-        all_zip_path = create_txt_and_images_zip_fn(results)
+        import os
+        import tempfile
+        
+        # Create a temporary directory to store the CSV file
+        temp_dir = tempfile.mkdtemp()
+        
+        # Create CSV file
+        csv_file_path = os.path.join(temp_dir, 'results.csv')
+        with open(csv_file_path, 'w', newline='', encoding='utf-8') as csvfile:
+            csvfile.write(csv_output)
+        
+        # Create TXT files zip
+        txt_zip_path = os.path.join(temp_dir, 'tags.zip')
+        with tempfile.TemporaryDirectory() as txt_temp_dir:
+            for result in results:
+                if 'error' not in result:
+                    filename = result.get('filename', result.get('url', 'unknown'))
+                    filename = os.path.splitext(os.path.basename(filename))[0] + '.txt'
+                    file_path = os.path.join(txt_temp_dir, filename)
+                    with open(file_path, 'w', encoding='utf-8') as txtfile:
+                        txtfile.write(f"Tags: {', '.join(result['tags'])}\n")
+                        txtfile.write(f"Scores: {', '.join(map(str, result['scores']))}\n")
+            
+            import zipfile
+            with zipfile.ZipFile(txt_zip_path, 'w') as zipf:
+                for root, _, files in os.walk(txt_temp_dir):
+                    for file in files:
+                        zipf.write(os.path.join(root, file), file)
+        
+        # Create TXT and images zip
+        all_zip_path = os.path.join(temp_dir, 'tags_and_images.zip')
+        with tempfile.TemporaryDirectory() as all_temp_dir:
+            for result in results:
+                if 'error' not in result:
+                    # Create TXT file
+                    filename = result.get('filename', result.get('url', 'unknown'))
+                    txt_filename = os.path.splitext(os.path.basename(filename))[0] + '.txt'
+                    txt_file_path = os.path.join(all_temp_dir, txt_filename)
+                    with open(txt_file_path, 'w', encoding='utf-8') as txtfile:
+                        txtfile.write(f"Tags: {', '.join(result['tags'])}\n")
+                        txtfile.write(f"Scores: {', '.join(map(str, result['scores']))}\n")
+                    
+                    # Create image file
+                    if 'image' in result:
+                        img_filename = os.path.splitext(os.path.basename(filename))[0] + '.png'
+                        img_file_path = os.path.join(all_temp_dir, img_filename)
+                        result['image'].save(img_file_path, 'PNG')
+            
+            import zipfile
+            with zipfile.ZipFile(all_zip_path, 'w') as zipf:
+                for root, _, files in os.walk(all_temp_dir):
+                    for file in files:
+                        zipf.write(os.path.join(root, file), file)
         
         return html_output, csv_file_path, txt_zip_path, all_zip_path
     def process_url_list(url_text, threshold, progress=gr.Progress()):
@@ -121,9 +173,59 @@ def create_interface(
         html_output = format_results_as_html(results)
         
         # Create downloadable files
-        csv_file_path = create_csv_file_fn(csv_output)
-        txt_zip_path = create_txt_files_zip_fn(results)
-        all_zip_path = create_txt_and_images_zip_fn(results)
+        import os
+        import tempfile
+        
+        # Create a temporary directory to store the CSV file
+        temp_dir = tempfile.mkdtemp()
+        
+        # Create CSV file
+        csv_file_path = os.path.join(temp_dir, 'results.csv')
+        with open(csv_file_path, 'w', newline='', encoding='utf-8') as csvfile:
+            csvfile.write(csv_output)
+        
+        # Create TXT files zip
+        txt_zip_path = os.path.join(temp_dir, 'tags.zip')
+        with tempfile.TemporaryDirectory() as txt_temp_dir:
+            for result in results:
+                if 'error' not in result:
+                    filename = result.get('filename', result.get('url', 'unknown'))
+                    filename = os.path.splitext(os.path.basename(filename))[0] + '.txt'
+                    file_path = os.path.join(txt_temp_dir, filename)
+                    with open(file_path, 'w', encoding='utf-8') as txtfile:
+                        txtfile.write(f"Tags: {', '.join(result['tags'])}\n")
+                        txtfile.write(f"Scores: {', '.join(map(str, result['scores']))}\n")
+            
+            import zipfile
+            with zipfile.ZipFile(txt_zip_path, 'w') as zipf:
+                for root, _, files in os.walk(txt_temp_dir):
+                    for file in files:
+                        zipf.write(os.path.join(root, file), file)
+        
+        # Create TXT and images zip
+        all_zip_path = os.path.join(temp_dir, 'tags_and_images.zip')
+        with tempfile.TemporaryDirectory() as all_temp_dir:
+            for result in results:
+                if 'error' not in result:
+                    # Create TXT file
+                    filename = result.get('filename', result.get('url', 'unknown'))
+                    txt_filename = os.path.splitext(os.path.basename(filename))[0] + '.txt'
+                    txt_file_path = os.path.join(all_temp_dir, txt_filename)
+                    with open(txt_file_path, 'w', encoding='utf-8') as txtfile:
+                        txtfile.write(f"Tags: {', '.join(result['tags'])}\n")
+                        txtfile.write(f"Scores: {', '.join(map(str, result['scores']))}\n")
+                    
+                    # Create image file
+                    if 'image' in result:
+                        img_filename = os.path.splitext(os.path.basename(filename))[0] + '.png'
+                        img_file_path = os.path.join(all_temp_dir, img_filename)
+                        result['image'].save(img_file_path, 'PNG')
+            
+            import zipfile
+            with zipfile.ZipFile(all_zip_path, 'w') as zipf:
+                for root, _, files in os.walk(all_temp_dir):
+                    for file in files:
+                        zipf.write(os.path.join(root, file), file)
         
         return html_output, csv_file_path, txt_zip_path, all_zip_path
     
@@ -151,9 +253,59 @@ def create_interface(
         html_output = format_results_as_html(results)
         
         # Create downloadable files
-        csv_file_path = create_csv_file_fn(csv_output)
-        txt_zip_path = create_txt_files_zip_fn(results)
-        all_zip_path = create_txt_and_images_zip_fn(results)
+        import os
+        import tempfile
+        
+        # Create a temporary directory to store the CSV file
+        temp_dir = tempfile.mkdtemp()
+        
+        # Create CSV file
+        csv_file_path = os.path.join(temp_dir, 'results.csv')
+        with open(csv_file_path, 'w', newline='', encoding='utf-8') as csvfile:
+            csvfile.write(csv_output)
+        
+        # Create TXT files zip
+        txt_zip_path = os.path.join(temp_dir, 'tags.zip')
+        with tempfile.TemporaryDirectory() as txt_temp_dir:
+            for result in results:
+                if 'error' not in result:
+                    filename = result.get('filename', result.get('url', 'unknown'))
+                    filename = os.path.splitext(os.path.basename(filename))[0] + '.txt'
+                    file_path = os.path.join(txt_temp_dir, filename)
+                    with open(file_path, 'w', encoding='utf-8') as txtfile:
+                        txtfile.write(f"Tags: {', '.join(result['tags'])}\n")
+                        txtfile.write(f"Scores: {', '.join(map(str, result['scores']))}\n")
+            
+            import zipfile
+            with zipfile.ZipFile(txt_zip_path, 'w') as zipf:
+                for root, _, files in os.walk(txt_temp_dir):
+                    for file in files:
+                        zipf.write(os.path.join(root, file), file)
+        
+        # Create TXT and images zip
+        all_zip_path = os.path.join(temp_dir, 'tags_and_images.zip')
+        with tempfile.TemporaryDirectory() as all_temp_dir:
+            for result in results:
+                if 'error' not in result:
+                    # Create TXT file
+                    filename = result.get('filename', result.get('url', 'unknown'))
+                    txt_filename = os.path.splitext(os.path.basename(filename))[0] + '.txt'
+                    txt_file_path = os.path.join(all_temp_dir, txt_filename)
+                    with open(txt_file_path, 'w', encoding='utf-8') as txtfile:
+                        txtfile.write(f"Tags: {', '.join(result['tags'])}\n")
+                        txtfile.write(f"Scores: {', '.join(map(str, result['scores']))}\n")
+                    
+                    # Create image file
+                    if 'image' in result:
+                        img_filename = os.path.splitext(os.path.basename(filename))[0] + '.png'
+                        img_file_path = os.path.join(all_temp_dir, img_filename)
+                        result['image'].save(img_file_path, 'PNG')
+            
+            import zipfile
+            with zipfile.ZipFile(all_zip_path, 'w') as zipf:
+                for root, _, files in os.walk(all_temp_dir):
+                    for file in files:
+                        zipf.write(os.path.join(root, file), file)
         
         return html_output, csv_file_path, txt_zip_path, all_zip_path
     

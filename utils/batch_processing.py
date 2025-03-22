@@ -8,7 +8,7 @@ import zipfile
 import shutil
 from typing import List, Dict, Tuple, Optional, Callable
 
-def get_supported_extensions():
+def get_supported_extensions() -> List[str]:
     return ['.jpg', '.jpeg', '.png', '.bmp', '.webp']
 
 def is_valid_url(url: str) -> bool:
@@ -19,11 +19,11 @@ def is_valid_path(path: str) -> bool:
     """Check if a string is a valid file path"""
     if not path:
         return False
-    
+
     # Check if the file exists
     if not os.path.isfile(path):
         return False
-    
+
     # Check if it has a supported extension
     ext = os.path.splitext(path)[1].lower()
     return ext in get_supported_extensions()
@@ -40,18 +40,18 @@ def process_urls_or_paths(
     input_map = {}
     valid_inputs = []
     results_dict = {}
-    
+
     # Separate URLs and file paths while preserving order
     urls = []
     file_paths = []
-    
+
     for idx, input_str in enumerate(inputs):
         input_str = input_str.strip()
         if not input_str:
             continue
-            
+
         input_map[input_str] = idx
-        
+
         if is_valid_url(input_str):
             urls.append(input_str)
             valid_inputs.append(input_str)
@@ -64,11 +64,11 @@ def process_urls_or_paths(
                 'input': input_str,
                 'error': "Invalid URL or file path"
             }
-    
+
     # Calculate total items for progress
     total_items = len(urls) + len(file_paths)
     processed_count = 0
-    
+
     # Process URLs
     if urls:
         for url in urls:
@@ -78,14 +78,14 @@ def process_urls_or_paths(
                 if not continue_processing:
                     # Processing was cancelled
                     break
-                
+
             try:
                 response = requests.get(url, timeout=10)
                 response.raise_for_status()
-                
+
                 image = Image.open(BytesIO(response.content))
                 tags, scores = tagger.process_image(image, transform, threshold)
-                
+
                 results_dict[url] = {
                     'url': url,
                     'tags': tags,
@@ -97,7 +97,7 @@ def process_urls_or_paths(
                     'url': url,
                     'error': str(e)
                 }
-    
+
     # Process file paths
     for file_path in file_paths:
         processed_count += 1
@@ -106,11 +106,11 @@ def process_urls_or_paths(
             if not continue_processing:
                 # Processing was cancelled
                 break
-            
+
         try:
             image = Image.open(file_path)
             tags, scores = tagger.process_image(image, transform, threshold)
-            
+
             results_dict[file_path] = {
                 'path': file_path,
                 'filename': os.path.basename(file_path),
@@ -124,17 +124,17 @@ def process_urls_or_paths(
                 'filename': os.path.basename(file_path),
                 'error': str(e)
             }
-    
+
     # Reconstruct results in original order
     results = []
     for input_str in inputs:
         input_str = input_str.strip()
         if not input_str:
             continue
-            
+
         if input_str in results_dict:
             results.append(results_dict[input_str])
-    
+
     return results
 
 def process_folder(
@@ -147,17 +147,17 @@ def process_folder(
     """Process all images in a folder and return results"""
     results = []
     supported_extensions = get_supported_extensions()
-    
+
     try:
         # Get list of files first
         image_files = []
         for filename in os.listdir(folder_path):
             file_path = os.path.join(folder_path, filename)
             ext = os.path.splitext(filename)[1].lower()
-            
+
             if os.path.isfile(file_path) and ext in supported_extensions:
                 image_files.append((filename, file_path))
-        
+
         # Process each file with progress updates
         total_files = len(image_files)
         for i, (filename, file_path) in enumerate(image_files):
@@ -168,7 +168,7 @@ def process_folder(
                     if not continue_processing:
                         # Processing was cancelled
                         break
-                
+
                 image = Image.open(file_path)
                 tags, scores = tagger.process_image(image, transform, threshold)
                 results.append({
@@ -186,7 +186,7 @@ def process_folder(
                 })
     except Exception as e:
         return [{'error': f"Error processing folder: {str(e)}"}]
-    
+
     return results
 
 def process_urls(
@@ -198,24 +198,15 @@ def process_urls(
 ) -> List[Dict]:
     """Process images from a list of URLs and return results"""
     results = []
-    valid_urls = [url.strip() for url in urls if url.strip() and is_valid_url(url.strip())]
-    total_urls = len(valid_urls)
-    
-    for i, url in enumerate(valid_urls):
-        # Update progress and check for cancellation
-        if progress_callback:
-            continue_processing = progress_callback(i + 1, total_urls)
-            if not continue_processing:
-                # Processing was cancelled
-                break
-            
+    total_urls = len(urls)
+    for i, url in enumerate(urls):
         try:
             response = requests.get(url, timeout=10)
             response.raise_for_status()
-            
+
             image = Image.open(BytesIO(response.content))
             tags, scores = tagger.process_image(image, transform, threshold)
-            
+
             results.append({
                 'url': url,
                 'tags': tags,
@@ -227,178 +218,70 @@ def process_urls(
                 'url': url,
                 'error': str(e)
             })
-    
+        if progress_callback:
+            continue_processing = progress_callback(i + 1, total_urls)
+            if not continue_processing:
+                # Processing was cancelled
+                break
     return results
 
 def format_results_as_csv(results: List[Dict]) -> str:
-    """Format results as CSV string with semi-colon delimiter"""
-    csv_output = []
-    
-    # Add header
-    csv_output.append("image_url;tags")
-    
-    # Process each result
+    """Format the results as a CSV string"""
+    output = []
+    headers = ['source', 'tags', 'scores']
+    output.append(','.join(headers))
+
     for result in results:
         if 'error' in result:
-            # Handle error case
-            if 'filename' in result:
-                # For folder processing or file paths
-                csv_output.append(f"{result['filename']};ERROR: {result['error']}")
-            elif 'url' in result:
-                # For URL processing
-                csv_output.append(f"{result['url']};ERROR: {result['error']}")
-            elif 'input' in result:
-                # For invalid inputs
-                csv_output.append(f"{result['input']};ERROR: {result['error']}")
-            else:
-                # Generic error
-                csv_output.append(f"unknown;ERROR: {result['error']}")
+            source = result.get('filename', result.get('url', result.get('input', 'unknown')))
+            output.append(f"{source},ERROR,{result['error']}")
         else:
-            # Handle success case
-            if 'filename' in result:
-                # For folder processing or file paths
-                csv_output.append(f"{result['filename']};{result['tags']}")
-            elif 'url' in result:
-                # For URL processing
-                csv_output.append(f"{result['url']};{result['tags']}")
-            else:
-                # Shouldn't happen, but just in case
-                source = result.get('path', 'unknown')
-                csv_output.append(f"{source};{result['tags']}")
-    
-    return "\n".join(csv_output)
+            source = result.get('filename', result.get('url', result.get('path', 'unknown')))
+            tags_str = '|'.join(result.get('tags', []))
+            scores_str = '|'.join(map(str, result.get('scores', [])))
+            output.append(f"{source},{tags_str},{scores_str}")
 
-def create_csv_file(csv_content: str) -> str:
-    """Create a temporary CSV file for download and return its path"""
-    # Create a temporary file
-    fd, path = tempfile.mkstemp(suffix='.csv')
-    try:
-        with os.fdopen(fd, 'w') as tmp:
-            tmp.write(csv_content)
-        return path
-    except Exception as e:
-        # If there's an error, make sure to close the file descriptor
-        os.close(fd)
-        raise e
+    return '\n'.join(output)
 
-def save_csv_to_file(csv_content: str, output_path: str) -> Tuple[bool, str]:
+def save_csv_to_file(output_path: str, csv_content: str) -> None:
     """Save CSV content to a file"""
-    try:
-        with open(output_path, 'w', newline='') as f:
-            f.write(csv_content)
-        return True, f"Successfully saved to {output_path}"
-    except Exception as e:
-        return False, f"Error saving file: {str(e)}"
+    import os
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
+        csvfile.write(csv_content)
 
-def create_txt_files_zip(results: List[Dict]) -> str:
-    """Create a zip file containing .txt files with tags for each image"""
-    # Create a temporary directory
-    temp_dir = tempfile.mkdtemp()
-    zip_path = os.path.join(temp_dir, "tags.zip")
-    
-    try:
-        # Track filenames to handle duplicates
-        used_filenames = set()
-        
-        with zipfile.ZipFile(zip_path, 'w') as zipf:
-            for result in results:
-                if 'error' in result:
-                    continue
-                
-                # Get base filename without extension
-                if 'filename' in result:
-                    base_name = os.path.splitext(result['filename'])[0]
-                else:
-                    # For URLs, use the last part of the URL
-                    url_parts = result['url'].split('/')
-                    base_name = url_parts[-1].split('?')[0]  # Remove query params
-                    base_name = os.path.splitext(base_name)[0]
-                
-                # Handle duplicate filenames
-                txt_filename = f"{base_name}.txt"
-                counter = 1
-                while txt_filename in used_filenames:
-                    txt_filename = f"{base_name} ({counter}).txt"
-                    counter += 1
-                
-                used_filenames.add(txt_filename)
-                
-                # Write tags to text file
-                txt_content = result['tags']
-                zipf.writestr(txt_filename, txt_content)
-        
-        return zip_path
-    except Exception as e:
-        shutil.rmtree(temp_dir)
-        raise e
+def create_txt_files_zip(output_path: str, results: List[Dict]) -> None:
+    """Create a zip file containing text files with tags and scores"""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for result in results:
+            if 'error' not in result:
+                filename = os.path.splitext(os.path.basename(result.get('filename', result.get('url', 'unknown'))))[0] + '.txt'
+                file_path = os.path.join(temp_dir, filename)
+                with open(file_path, 'w', encoding='utf-8') as txtfile:
+                    txtfile.write(f"Tags: {', '.join(result['tags'])}\n")
+                    txtfile.write(f"Scores: {', '.join(map(str, result['scores']))}\n")
 
-def create_txt_and_images_zip(results: List[Dict]) -> str:
-    """Create a zip file containing both .txt files and images"""
-    # Create a temporary directory
-    temp_dir = tempfile.mkdtemp()
-    zip_path = os.path.join(temp_dir, "tags_and_images.zip")
-    
-    try:
-        # Track filenames to handle duplicates
-        used_filenames = set()
-        
-        with zipfile.ZipFile(zip_path, 'w') as zipf:
-            for result in results:
-                if 'error' in result:
-                    continue
-                
-                # Get base filename without extension
-                if 'filename' in result:
-                    base_name = os.path.splitext(result['filename'])[0]
-                    ext = os.path.splitext(result['filename'])[1]
-                else:
-                    # For URLs, use the last part of the URL
-                    url_parts = result['url'].split('/')
-                    base_name = url_parts[-1].split('?')[0]  # Remove query params
-                    base_name, ext = os.path.splitext(base_name)
-                
-                # Handle duplicate filenames for txt
-                txt_filename = f"{base_name}.txt"
-                counter = 1
-                while txt_filename in used_filenames:
-                    txt_filename = f"{base_name} ({counter}).txt"
-                    counter += 1
-                
-                used_filenames.add(txt_filename)
-                
-                # Write tags to text file
-                txt_content = result['tags']
-                zipf.writestr(txt_filename, txt_content)
-                
-                # Add image to zip
-                if 'image' in result:
-                    # Handle duplicate filenames for image
-                    img_filename = f"{base_name}{ext}"
-                    counter = 1
-                    while img_filename in used_filenames:
-                        img_filename = f"{base_name} ({counter}){ext}"
-                        counter += 1
-                    
-                    used_filenames.add(img_filename)
-                    
-                    # Save image to temp file and add to zip
-                    img_temp = os.path.join(temp_dir, img_filename)
-                    result['image'].save(img_temp)
-                    zipf.write(img_temp, img_filename)
-                    os.remove(img_temp)  # Clean up temp file
-                elif 'path' in result:
-                    # For folder processing, add original image
-                    img_filename = result['filename']
-                    counter = 1
-                    while img_filename in used_filenames:
-                        base, ext = os.path.splitext(result['filename'])
-                        img_filename = f"{base} ({counter}){ext}"
-                        counter += 1
-                    
-                    used_filenames.add(img_filename)
-                    zipf.write(result['path'], img_filename)
-        
-        return zip_path
-    except Exception as e:
-        shutil.rmtree(temp_dir)
-        raise e
+        with zipfile.ZipFile(output_path, 'w') as zipf:
+            for root, _, files in os.walk(temp_dir):
+                for file in files:
+                    zipf.write(os.path.join(root, file), file)
+
+def create_txt_and_images_zip(output_path: str, results: List[Dict]) -> None:
+    """Create a zip file containing text files with tags and scores and images"""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for result in results:
+            if 'error' not in result:
+                txt_filename = os.path.splitext(os.path.basename(result.get('filename', result.get('url', 'unknown'))))[0] + '.txt'
+                txt_file_path = os.path.join(temp_dir, txt_filename)
+                with open(txt_file_path, 'w', encoding='utf-8') as txtfile:
+                    txtfile.write(f"Tags: {', '.join(result['tags'])}\n")
+                    txtfile.write(f"Scores: {', '.join(map(str, result['scores']))}\n")
+
+                img_filename = os.path.splitext(os.path.basename(result.get('filename', result.get('url', 'unknown'))))[0] + '.png'
+                img_file_path = os.path.join(temp_dir, img_filename)
+                result['image'].save(img_file_path, 'PNG')
+
+        with zipfile.ZipFile(output_path, 'w') as zipf:
+            for root, _, files in os.walk(temp_dir):
+                for file in files:
+                    zipf.write(os.path.join(root, file), file)
