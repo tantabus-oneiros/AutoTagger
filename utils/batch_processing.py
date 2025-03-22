@@ -226,21 +226,23 @@ def process_urls(
     return results
 
 def format_results_as_csv(results: List[Dict]) -> str:
-    """Format the results as a CSV string"""
+    """Format the results as a CSV string with semi-colon delimiter"""
     output = []
-    headers = ['source', 'tags', 'scores']
-    output.append(','.join(headers))
-
+    # Add header
+    output.append("image_url;tags")
+    
+    # Process each result
     for result in results:
         if 'error' in result:
+            # Handle error case
             source = result.get('filename', result.get('url', result.get('input', 'unknown')))
-            output.append(f"{source},ERROR,{result['error']}")
+            output.append(f"{source};ERROR: {result['error']}")
         else:
+            # Handle success case
             source = result.get('filename', result.get('url', result.get('path', 'unknown')))
-            tags_str = '|'.join(result.get('tags', []))
-            scores_str = '|'.join(map(str, result.get('scores', [])))
-            output.append(f"{source},{tags_str},{scores_str}")
-
+            tags_str = result.get('tags', '')
+            output.append(f"{source};{tags_str}")
+    
     return '\n'.join(output)
 
 def save_csv_to_file(output_path: str, csv_content: str) -> None:
@@ -258,8 +260,7 @@ def create_txt_files_zip(output_path: str, results: List[Dict]) -> None:
                 filename = os.path.splitext(os.path.basename(result.get('filename', result.get('url', 'unknown'))))[0] + '.txt'
                 file_path = os.path.join(temp_dir, filename)
                 with open(file_path, 'w', encoding='utf-8') as txtfile:
-                    txtfile.write(f"Tags: {', '.join(result['tags'])}\n")
-                    txtfile.write(f"Scores: {', '.join(map(str, result['scores']))}\n")
+                    txtfile.write(result['tags'])
 
         with zipfile.ZipFile(output_path, 'w') as zipf:
             for root, _, files in os.walk(temp_dir):
@@ -274,8 +275,7 @@ def create_txt_and_images_zip(output_path: str, results: List[Dict]) -> None:
                 txt_filename = os.path.splitext(os.path.basename(result.get('filename', result.get('url', 'unknown'))))[0] + '.txt'
                 txt_file_path = os.path.join(temp_dir, txt_filename)
                 with open(txt_file_path, 'w', encoding='utf-8') as txtfile:
-                    txtfile.write(f"Tags: {', '.join(result['tags'])}\n")
-                    txtfile.write(f"Scores: {', '.join(map(str, result['scores']))}\n")
+                    txtfile.write(result['tags'])
 
                 img_filename = os.path.splitext(os.path.basename(result.get('filename', result.get('url', 'unknown'))))[0] + '.png'
                 img_file_path = os.path.join(temp_dir, img_filename)
