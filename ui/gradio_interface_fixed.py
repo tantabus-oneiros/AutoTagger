@@ -199,9 +199,6 @@ def create_interface(
         """Convert text format to translations dictionary."""
         translations = {}
         
-        print("Converting text to translations dictionary:")
-        print(f"Text length: {len(text)}")
-        
         for line in text.split("\n"):
             # Skip empty lines and comments
             line = line.strip()
@@ -214,19 +211,13 @@ def create_interface(
                 original = parts[0].strip()
                 translation = parts[1].strip()
                 
-                print(f"Parsed line: '{original}' -> '{translation}'")
-                
                 if original:
-                    if translation == ".":
-                        # Period means delete the tag - add it to translations with "." value
-                        translations[original] = "."
-                        print(f"  Added deletion entry for '{original}'")
-                    elif translation:
+                    if translation and translation != ".":
                         translations[original] = translation
-                        print(f"  Added translation entry for '{original}'")
-                    else:
-                        # Empty translation means keep the original
-                        print(f"  Skipping empty translation for '{original}'")
+                    elif translation == ".":
+                        # Period means delete the tag
+                        if original in translations:
+                            del translations[original]
         
         return translations
     
@@ -300,80 +291,49 @@ def create_interface(
     
     def apply_translations_to_file(file_path, text):
         """Apply translations from text to a file."""
-        print(f"apply_translations_to_file called with file_path: {file_path}")
-        print(f"Text length: {len(text)}")
-        
         translations = text_to_dict(text)
-        print(f"Parsed {len(translations)} translations from text")
         
         if not translations:
-            print("No translations to apply")
             return None, "No translations to apply. Please add some translations first."
         
-        print(f"Calling process_translate_file with {len(translations)} translations")
         return process_translate_file(file_path, translations)
     
     def process_translate_file(file_path, translations):
         """Translate tags in a file (TXT or CSV)."""
-        print(f"process_translate_file called with file_path: {file_path}")
-        print(f"Number of translations: {len(translations)}")
-        
         try:
             if not file_path or not os.path.isfile(file_path):
-                print(f"Invalid file path: {file_path}")
                 return None, "Invalid file path"
             
             if not translations:
-                print("No translations provided")
                 return None, "No translations provided"
             
             ext = os.path.splitext(file_path)[1].lower()
-            print(f"File extension: {ext}")
             
             # Create a temporary directory for the output file
             temp_dir = tempfile.mkdtemp()
-            print(f"Created temporary directory: {temp_dir}")
             
             if ext == '.txt':
-                print("Processing TXT file")
                 translated_content = utils.batch_processing.translate_txt_file(file_path, translations)
                 output_filename = os.path.basename(file_path).replace('.txt', '_translated.txt')
                 output_path = os.path.join(temp_dir, output_filename)
-                print(f"Writing translated content to: {output_path}")
                 with open(output_path, 'w', encoding='utf-8') as f:
                     f.write(translated_content)
                 
-                print(f"TXT file created: {output_path}")
                 return output_path, f"Translated TXT file created"
             
             elif ext == '.csv':
-                print("Processing CSV file")
                 translated_content = utils.batch_processing.translate_csv_file(file_path, translations)
                 output_filename = os.path.basename(file_path).replace('.csv', '_translated.csv')
                 output_path = os.path.join(temp_dir, output_filename)
-                print(f"Writing translated content to: {output_path}")
-                print(f"Translated content size: {len(translated_content)} bytes")
-                
                 with open(output_path, 'w', encoding='utf-8') as f:
                     f.write(translated_content)
                 
-                # Verify the file was created
-                if os.path.exists(output_path):
-                    file_size = os.path.getsize(output_path)
-                    print(f"CSV file created: {output_path}, size: {file_size} bytes")
-                    return output_path, f"Translated CSV file created"
-                else:
-                    print(f"Failed to create file: {output_path}")
-                    return None, "Failed to create translated file"
+                return output_path, f"Translated CSV file created"
             
             else:
-                print(f"Unsupported file type: {ext}")
                 return None, f"Unsupported file type: {ext}"
         
         except Exception as e:
-            import traceback
-            print(f"Error translating file: {str(e)}")
-            print(traceback.format_exc())
             return None, f"Error translating file: {str(e)}"
     
     def process_translate_folder(folder_path, translations):

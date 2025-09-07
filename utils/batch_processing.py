@@ -2,7 +2,7 @@ import os
 import csv
 import requests
 from PIL import Image
-from io import BytesIO
+from io import BytesIO, StringIO
 import tempfile
 import zipfile
 import shutil
@@ -98,26 +98,70 @@ def process_urls_or_paths(
                     'error': str(e)
                 }
 
-    # Process file paths
-    for file_path in file_paths:
-        processed_count += 1
-        if progress_callback:
-            continue_processing = progress_callback(processed_count, total_items)
-            if not continue_processing:
-                # Processing was cancelled
-                break
-
-        try:
-            image = Image.open(file_path)
-            tags, scores = tagger.process_image(image, transform, threshold)
-
+    # Process file paths in batches
+    batch_size = 8
+    continue_processing = True
+    
+    for i in range(0, len(file_paths), batch_size):
+        if not continue_processing:
+            break
+            
+        batch_paths = file_paths[i:i+batch_size]
+        batch_images = []
+        batch_errors = []
+        
+        # Load batch of images
+        for file_path in batch_paths:
+            processed_count += 1
+            if progress_callback:
+                continue_processing = progress_callback(processed_count, total_items)
+                if not continue_processing:
+                    break
+            
+            try:
+                image = Image.open(file_path)
+                batch_images.append((file_path, image))
+            except Exception as e:
+                batch_errors.append((file_path, str(e)))
+        
+        # Handle individual image loading errors
+        for file_path, error in batch_errors:
             results_dict[file_path] = {
                 'path': file_path,
                 'filename': os.path.basename(file_path),
-                'tags': tags,
-                'scores': scores,
-                'image': image.copy()  # Store a copy of the image for thumbnail display
+                'error': error
             }
+        
+        # Skip if no images or processing was cancelled
+        if not batch_images or not continue_processing:
+            continue
+            
+        # Prepare batch data
+        paths = [item[0] for item in batch_images]
+        images = [item[1] for item in batch_images]
+        
+        try:
+            # Process the batch
+            batch_results = tagger.process_images(images, transform, threshold)
+            
+            # Store successful results
+            for idx, (tags, scores) in enumerate(batch_results):
+                results_dict[paths[idx]] = {
+                    'path': paths[idx],
+                    'filename': os.path.basename(paths[idx]),
+                    'tags': tags,
+                    'scores': scores,
+                    'image': images[idx].copy()
+                }
+        except Exception as e:
+            # Handle batch processing errors
+            error_msg = f"Batch processing error: {str(e)}"
+            for file_path in paths:
+                results_dict[file_path] = {
+                    'path': file_path,
+                    'filename': os.path.basename(file_path),
+                    'error': error_msg
+                }
         except Exception as e:
             results_dict[file_path] = {
                 'path': file_path,
@@ -194,35 +238,71 @@ def process_urls(
     tagger,
     transform,
     threshold: float,
-    progress_callback: Optional[Callable[[int, int], bool]] = None
+    progress_callback: Optional[Callable[[int, int], bool]] = None,
+    max_workers: int = 4,
+    request_delay: float = 0.5
 ) -> List[Dict]:
-    """Process images from a list of URLs and return results"""
+    """Process images from a list of URLs with rate limiting and parallel processing"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time
+    from queue import Queue
+
     results = []
     total_urls = len(urls)
-    for i, url in enumerate(urls):
+    url_queue = Queue()
+    last_request_time = 0
+
+    # Worker function with rate limiting
+    def process_single_url(url: str) -> Dict:
+        nonlocal last_request_time
+        current_time = time.time()
+        elapsed = current_time - last_request_time
+        
+        # Enforce rate limiting
+        if elapsed < request_delay:
+            time.sleep(request_delay - elapsed)
+        
         try:
+            last_request_time = time.time()
             response = requests.get(url, timeout=10)
             response.raise_for_status()
 
             image = Image.open(BytesIO(response.content))
             tags, scores = tagger.process_image(image, transform, threshold)
 
-            results.append({
+            return {
                 'url': url,
                 'tags': tags,
                 'scores': scores,
-                'image': image.copy()  # Store a copy of the image for thumbnail display
-            })
+                'image': image.copy()
+            }
         except Exception as e:
-            results.append({
+            return {
                 'url': url,
                 'error': str(e)
-            })
-        if progress_callback:
-            continue_processing = progress_callback(i + 1, total_urls)
-            if not continue_processing:
-                # Processing was cancelled
-                break
+            }
+
+    # Process URLs with thread pool
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(process_single_url, url): url for url in urls}
+        
+        for i, future in enumerate(as_completed(futures)):
+            if progress_callback:
+                continue_processing = progress_callback(i + 1, total_urls)
+                if not continue_processing:
+                    # Cancel remaining futures
+                    for f in futures:
+                        f.cancel()
+                    break
+            
+            try:
+                results.append(future.result())
+            except Exception as e:
+                results.append({
+                    'url': futures[future],
+                    'error': str(e)
+                })
+
     return results
 
 def format_results_as_csv(results: List[Dict]) -> str:
@@ -281,6 +361,272 @@ def create_txt_and_images_zip(output_path: str, results: List[Dict]) -> None:
                 img_file_path = os.path.join(temp_dir, img_filename)
                 result['image'].save(img_file_path, 'PNG')
 
+        with zipfile.ZipFile(output_path, 'w') as zipf:
+            for root, _, files in os.walk(temp_dir):
+                for file in files:
+                    zipf.write(os.path.join(root, file), file)
+
+# Tag Translation Functions
+
+def load_translations_from_csv(file_path: str) -> Dict[str, str]:
+    """Load translations from a CSV file.
+    
+    Args:
+        file_path: Path to the CSV file
+        
+    Returns:
+        Dictionary mapping original tags to their translations
+    """
+    translations = {}
+    with open(file_path, 'r', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        next(reader, None)  # Skip header
+        for row in reader:
+            if len(row) >= 2 and row[1].strip():  # Only store non-empty translations
+                translations[row[0]] = row[1]
+    return translations
+
+def save_translations_to_csv(file_path: str, translations: Dict[str, str]) -> None:
+    """Save translations to a CSV file.
+    
+    Args:
+        file_path: Path to save the CSV file
+        translations: Dictionary mapping original tags to their translations
+    """
+    with open(file_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(["original", "translation"])
+        for original, translation in translations.items():
+            writer.writerow([original, translation])
+
+def apply_translations(text: str, translations: Dict[str, str]) -> str:
+    """Apply translations to a comma-separated string of tags.
+    
+    Args:
+        text: Comma-separated string of tags
+        translations: Dictionary mapping original tags to their translations
+        
+    Returns:
+        Translated comma-separated string of tags
+    """
+    print(f"Applying translations to: '{text}'")
+    print(f"Translations dictionary: {translations}")
+    
+    # Handle empty input
+    if not text.strip():
+        return ""
+    
+    # Split the input text into individual tags
+    tags = [tag.strip() for tag in text.split(',') if tag.strip()]
+    print(f"Split tags: {tags}")
+    
+    # Process each tag according to the translations
+    translated_tags = []
+    for tag in tags:
+        print(f"Processing tag: '{tag}'")
+        if tag in translations:
+            translation = translations[tag]
+            print(f"  Found translation: '{translation}'")
+            if translation == '.':  # Special character for deletion
+                print(f"  Deleting tag '{tag}'")
+                # Skip this tag entirely
+            else:
+                # Add all translated tags (may be multiple comma-separated tags)
+                translated_parts = [t.strip() for t in translation.split(',') if t.strip()]
+                print(f"  Adding translated parts: {translated_parts}")
+                translated_tags.extend(translated_parts)
+        else:
+            # Keep original tag if no translation exists
+            print(f"  No translation found, keeping original: '{tag}'")
+            translated_tags.append(tag)
+    
+    # Join the translated tags with commas
+    result = ', '.join(translated_tags) if translated_tags else ""
+    print(f"Final translated result: '{result}'")
+    return result
+
+def translate_txt_file(input_path: str, translations: Dict[str, str]) -> str:
+    """Translate tags in a TXT file.
+    
+    Args:
+        input_path: Path to the TXT file
+        translations: Dictionary mapping original tags to their translations
+        
+    Returns:
+        Translated content as a string
+    """
+    with open(input_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    translated_content = apply_translations(content, translations)
+    
+    return translated_content
+
+def translate_csv_file(input_path: str, translations: Dict[str, str]) -> str:
+    """Translate tags in a CSV file (only the 'tags' column).
+    
+    Args:
+        input_path: Path to the CSV file
+        translations: Dictionary mapping original tags to their translations
+        
+    Returns:
+        Translated content as a string
+    """
+    print(f"Translating CSV file: {input_path}")
+    print(f"Number of translations: {len(translations)}")
+    
+    # Read the entire file as text
+    with open(input_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    # Make a copy of the original content
+    original_content = content
+    
+    # First, detect the delimiter
+    delimiter = ','  # Default to comma
+    for possible_delimiter in [',', ';', '\t', '|']:
+        if possible_delimiter in content.split('\n')[0]:
+            delimiter = possible_delimiter
+            break
+    
+    print(f"Using delimiter: '{delimiter}'")
+    
+    # Split the content into lines
+    lines = content.split('\n')
+    if not lines:
+        print("Empty file")
+        return ""
+    
+    # Parse the header to find the tags column
+    header_line = lines[0]
+    # Handle quoted headers
+    header_parts = []
+    in_quotes = False
+    current_part = ""
+    for char in header_line:
+        if char == '"':
+            in_quotes = not in_quotes
+            current_part += char
+        elif char == delimiter and not in_quotes:
+            header_parts.append(current_part)
+            current_part = ""
+        else:
+            current_part += char
+    header_parts.append(current_part)  # Add the last part
+    
+    # Find the tags column
+    tags_col_idx = -1
+    for i, col in enumerate(header_parts):
+        # Remove quotes if present
+        col_name = col.strip('"\'')
+        if 'tags' in col_name.lower():
+            tags_col_idx = i
+            print(f"Found tags column at index {tags_col_idx}: '{col_name}'")
+            break
+    
+    if tags_col_idx == -1:
+        print("Warning: No 'tags' column found in CSV. Using default index 1.")
+        tags_col_idx = 1  # Default to second column as fallback
+    
+    # Create a temporary file to write the translated content
+    temp_file = tempfile.mktemp(suffix='.csv')
+    print(f"Writing translated CSV to temporary file: {temp_file}")
+    
+    # Process the file line by line, preserving the original format
+    with open(temp_file, 'w', encoding='utf-8') as f:
+        # Write the header unchanged
+        f.write(lines[0] + '\n')
+        
+        # Process each data line
+        for i in range(1, len(lines)):
+            line = lines[i]
+            if not line.strip():
+                f.write(line + '\n' if i < len(lines) - 1 else line)
+                continue
+            
+            # Parse the line, preserving quotes and delimiters
+            parts = []
+            in_quotes = False
+            current_part = ""
+            for char in line:
+                if char == '"':
+                    in_quotes = not in_quotes
+                    current_part += char
+                elif char == delimiter and not in_quotes:
+                    parts.append(current_part)
+                    current_part = ""
+                else:
+                    current_part += char
+            parts.append(current_part)  # Add the last part
+            
+            # Translate the tags column if it exists
+            if len(parts) > tags_col_idx:
+                tags_part = parts[tags_col_idx]
+                
+                # Check if the tags are quoted
+                if tags_part.startswith('"') and tags_part.endswith('"'):
+                    # Remove the quotes for translation
+                    tags = tags_part[1:-1]
+                    translated_tags = apply_translations(tags, translations)
+                    # Add the quotes back
+                    parts[tags_col_idx] = f'"{translated_tags}"'
+                else:
+                    # No quotes
+                    translated_tags = apply_translations(tags_part, translations)
+                    parts[tags_col_idx] = translated_tags
+                
+                print(f"Row {i}: Translated tags")
+            
+            # Join the parts back together with the original delimiter
+            translated_line = delimiter.join(parts)
+            f.write(translated_line + '\n' if i < len(lines) - 1 else translated_line)
+    
+    # Read the translated file
+    with open(temp_file, 'r', encoding='utf-8') as f:
+        translated_content = f.read()
+    
+    print(f"Translated CSV file size: {len(translated_content)} bytes")
+    
+    # Verify that only the tags column was changed
+    if len(original_content.split('\n')) != len(translated_content.split('\n')):
+        print("Warning: Line count changed during translation")
+    
+    return translated_content
+
+def translate_txt_folder(folder_path: str, translations: Dict[str, str]) -> List[Dict]:
+    """Translate all TXT files in a folder.
+    
+    Args:
+        folder_path: Path to the folder containing TXT files
+        translations: Dictionary mapping original tags to their translations
+        
+    Returns:
+        List of dictionaries with filename and translated content
+    """
+    results = []
+    for filename in os.listdir(folder_path):
+        if filename.endswith('.txt'):
+            file_path = os.path.join(folder_path, filename)
+            translated_content = translate_txt_file(file_path, translations)
+            results.append({
+                'filename': filename,
+                'content': translated_content
+            })
+    return results
+
+def create_translated_txt_files_zip(output_path: str, results: List[Dict]) -> None:
+    """Create a zip file containing translated TXT files.
+    
+    Args:
+        output_path: Path to save the ZIP file
+        results: List of dictionaries with filename and translated content
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for result in results:
+            file_path = os.path.join(temp_dir, result['filename'])
+            with open(file_path, 'w', encoding='utf-8') as txtfile:
+                txtfile.write(result['content'])
+        
         with zipfile.ZipFile(output_path, 'w') as zipf:
             for root, _, files in os.walk(temp_dir):
                 for file in files:
